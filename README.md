@@ -8,8 +8,8 @@ GPS data logger built on STM32F429I-DISC1 with NEO-6M GPS module.
 - CP2102 USB-UART adapter
 
 ## Wiring
-GPS TX --> PD2 (UART5 RX) --> NEO-6M TX 
-Debug TX --> PA9 (USART1 TX) --> CP2102 RXD
+- GPS TX --> PD2 (UART5 RX) --> NEO-6M TX 
+- Debug TX --> PA9 (USART1 TX) --> CP2102 RXD
 
 ## Phases
 - [x] Phase 1 — Polling UART, raw NMEA output verified

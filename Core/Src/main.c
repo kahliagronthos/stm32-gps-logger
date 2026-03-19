@@ -18,6 +18,8 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
+#include "nmea_parser.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -46,6 +48,37 @@ UART_HandleTypeDef huart5;
 UART_HandleTypeDef huart1;
 DMA_HandleTypeDef hdma_uart5_rx;
 
+/* Definitions for gpsTask */
+osThreadId_t gpsTaskHandle;
+const osThreadAttr_t gpsTask_attributes = {
+  .name = "gpsTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for loggerTask */
+osThreadId_t loggerTaskHandle;
+const osThreadAttr_t loggerTask_attributes = {
+  .name = "loggerTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for lcdTask */
+osThreadId_t lcdTaskHandle;
+const osThreadAttr_t lcdTask_attributes = {
+  .name = "lcdTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for gpsQueue */
+osMessageQueueId_t gpsQueueHandle;
+const osMessageQueueAttr_t gpsQueue_attributes = {
+  .name = "gpsQueue"
+};
+/* Definitions for gpsSemaphore */
+osSemaphoreId_t gpsSemaphoreHandle;
+const osSemaphoreAttr_t gpsSemaphore_attributes = {
+  .name = "gpsSemaphore"
+};
 /* USER CODE BEGIN PV */
 uint8_t dma_buf[DMA_BUF_SIZE];
 uint8_t proc_buf[PROC_BUF_SIZE + 1];
@@ -60,6 +93,10 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_UART5_Init(void);
 static void MX_USART1_UART_Init(void);
+void StartGpsTask(void *argument);
+void StartLoggerTask(void *argument);
+void StartLcdTask(void *argument);
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -69,6 +106,7 @@ static void MX_USART1_UART_Init(void);
 int _write(int file, char *ptr, int len)
 {
 	HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, HAL_MAX_DELAY);
+	//HAL_UART_Transmit_IT(&huart1, (uint8_t*)ptr, len);
 	return len;
 }
 /* USER CODE END 0 */
@@ -109,6 +147,56 @@ int main(void)
   HAL_UARTEx_ReceiveToIdle_DMA(&huart5, dma_buf, DMA_BUF_SIZE);		// Setting up transfer of UART5 RX data via DMA
   __HAL_DMA_DISABLE_IT(huart5.hdmarx, DMA_IT_HT);					// Disable half-transfer interrupt to ensure single callback at the end
   /* USER CODE END 2 */
+
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* Create the semaphores(s) */
+  /* creation of gpsSemaphore */
+  gpsSemaphoreHandle = osSemaphoreNew(1, 0, &gpsSemaphore_attributes);
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* Create the queue(s) */
+  /* creation of gpsQueue */
+  gpsQueueHandle = osMessageQueueNew (5, 28, &gpsQueue_attributes);
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of gpsTask */
+  gpsTaskHandle = osThreadNew(StartGpsTask, NULL, &gpsTask_attributes);
+
+  /* creation of loggerTask */
+  loggerTaskHandle = osThreadNew(StartLoggerTask, NULL, &loggerTask_attributes);
+
+  /* creation of lcdTask */
+  lcdTaskHandle = osThreadNew(StartLcdTask, NULL, &lcdTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -257,7 +345,7 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Stream0_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
 
 }
@@ -524,7 +612,9 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     {
         memcpy(proc_buf, dma_buf, Size);
         proc_len = Size;
-        sentence_ready = 1;
+
+        // signal gpsTask that a sentence is ready
+        osSemaphoreRelease(gpsSemaphoreHandle);
 
         HAL_UARTEx_ReceiveToIdle_DMA(&huart5, dma_buf, DMA_BUF_SIZE);
         __HAL_DMA_DISABLE_IT(huart5.hdmarx, DMA_IT_HT);
@@ -532,6 +622,116 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 }
 
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartGpsTask */
+/**
+  * @brief  Function implementing the gpsTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartGpsTask */
+void StartGpsTask(void *argument)
+{
+	/* USER CODE BEGIN 5 */
+    GPS_Data_t gps_data;
+
+    for(;;)
+    {
+    	// wait for the DMA callback to signal that a sentence is ready
+    	osSemaphoreAcquire(gpsSemaphoreHandle, osWaitForever);
+
+    	// find $GNRMC or $GPRMC line in the buffer
+    	char *line = strstr((char*)proc_buf, "$GNRMC");
+    	if (!line) line = strstr((char*)proc_buf, "$GPRMC");
+
+    	if (line)
+    	{
+    	    char *end = strstr(line, "\r\n");
+    	    if (end) *end = '\0';
+
+    	    // verify line is complete — must contain '*' followed by 2 checksum chars
+    	    char *star = strchr(line, '*');
+    	    if (star && strlen(star) >= 3)
+    	    {
+    	        if (nmea_parse(line, &gps_data))
+    	        {
+    	            osMessageQueuePut(gpsQueueHandle, &gps_data, 0, 0);
+    	        }
+    	    }
+    	    // else: silently drop incomplete sentence, next callback will have the rest
+    	}
+    }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_StartLoggerTask */
+/**
+* @brief Function implementing the loggerTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartLoggerTask */
+void StartLoggerTask(void *argument)
+{
+	/* USER CODE BEGIN StartLoggerTask */
+	GPS_Data_t gps_data;
+
+	for(;;)
+	{
+
+		// block until gpsTask puts a parsed fix on the queue
+		if (osMessageQueueGet(gpsQueueHandle, &gps_data, NULL, 0) == osOK)
+		{
+			printf("UTC: %s  Lat: %.6f  Lon: %.6f  Speed: %.2f kts\r\n",
+					gps_data.time_utc,
+					gps_data.latitude,
+					gps_data.longitude,
+					gps_data.speed_knots);
+			//osDelay(10);
+		}
+	}
+  /* USER CODE END StartLoggerTask */
+}
+
+/* USER CODE BEGIN Header_StartLcdTask */
+/**
+* @brief Function implementing the lcdTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartLcdTask */
+void StartLcdTask(void *argument)
+{
+  /* USER CODE BEGIN StartLcdTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartLcdTask */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM1 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM1)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.

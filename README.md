@@ -44,3 +44,6 @@ screen /dev/tty.usbserial-0001 115200
 ## Viewing the Map
 Open `track.html` in any browser after running the logger. Refresh the page to see the route update as new fixes stream in!
 
+
+Here's an example of it tracking a walk down the block:
+![GPS Track](assets/map.png)

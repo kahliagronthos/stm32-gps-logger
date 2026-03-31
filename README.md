@@ -46,4 +46,4 @@ Open `track.html` in any browser after running the logger. Refresh the page to s
 
 
 Here's an example of it tracking a walk down the block:
-![GPS Track](assets/map.png)
+![GPS Track](assets/map_visualizer.png)
